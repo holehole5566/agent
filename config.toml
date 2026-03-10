@@ -1,0 +1,23 @@
+[model]
+provider = "bedrock"
+model_id = "us.anthropic.claude-sonnet-4-6"
+region = "us-east-1"
+max_tokens = 8000
+
+[agent]
+token_threshold = 100000
+
+[team]
+poll_interval = 5
+idle_timeout = 60
+
+[paths]
+skills_dir = "skills"
+tasks_dir = ".tasks"
+team_dir = ".team"
+transcripts_dir = ".transcripts"
+sessions_dir = ".sessions"
+
+[logging]
+level = "INFO"
+file = "logs/agent.log"

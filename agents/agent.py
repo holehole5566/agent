@@ -1,10 +1,11 @@
 """Agent orchestrator — tool dispatch, tool definitions, and main loop."""
 
 import json
+import logging
 
 from config import WORKDIR, VALID_MSG_TYPES, TOKEN_THRESHOLD
 from _bedrock import (
-    get_client, get_model, converse, to_bedrock_tools,
+    get_client, get_model, converse, converse_stream, to_bedrock_tools,
     user_msg, asst_msg, get_tool_uses, get_text,
 )
 from tools import run_bash, run_read, run_write, run_edit
@@ -15,8 +16,12 @@ from messaging import MessageBus
 from skills import SkillLoader
 from compression import estimate_tokens, microcompact, auto_compact
 from team import TeammateManager, handle_shutdown_request, handle_plan_review
+from permissions import ALL_SCOPES, DEFAULT_TEAMMATE_SCOPES, check_permission, get_required_scope
+from hooks import emit
 
 from config import SKILLS_DIR
+
+log = logging.getLogger("agent")
 
 # --- Global instances ---
 client = get_client()
@@ -35,7 +40,7 @@ Use task for subagent delegation. Use load_skill for specialized knowledge.
 Skills: {SKILLS.descriptions()}"""
 
 
-# --- Subagent ---
+# --- Subagent (non-streaming, internal) ---
 def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     sub_tools_def = [
         {"name": "bash", "description": "Run command.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
@@ -56,7 +61,7 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     sub_msgs = [user_msg(prompt)]
     msg = None
     for _ in range(30):
-        msg, stop_reason = converse(client, MODEL, "", sub_msgs, tools=sub_tools, max_tokens=8000)
+        msg, stop_reason, _ = converse(client, MODEL, "", sub_msgs, tools=sub_tools, max_tokens=8000)
         sub_msgs.append(msg)
         if stop_reason != "tool_use":
             break
@@ -86,7 +91,7 @@ TOOL_HANDLERS = {
     "task_get":         lambda **kw: TASK_MGR.get(kw["task_id"]),
     "task_update":      lambda **kw: TASK_MGR.update(kw["task_id"], kw.get("status"), kw.get("add_blocked_by"), kw.get("add_blocks")),
     "task_list":        lambda **kw: TASK_MGR.list_all(),
-    "spawn_teammate":   lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
+    "spawn_teammate":   lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"], scopes=set(kw.get("scopes", [])) or None),
     "list_teammates":   lambda **kw: TEAM.list_all(),
     "send_message":     lambda **kw: BUS.send("lead", kw["to"], kw["content"], kw.get("msg_type", "message")),
     "read_inbox":       lambda **kw: json.dumps(BUS.read_inbox("lead"), indent=2),
@@ -114,7 +119,7 @@ TOOLS_DEF = [
     {"name": "task_get", "description": "Get task by ID.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
     {"name": "task_update", "description": "Update task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "deleted"]}, "add_blocked_by": {"type": "array", "items": {"type": "integer"}}, "add_blocks": {"type": "array", "items": {"type": "integer"}}}, "required": ["task_id"]}},
     {"name": "task_list", "description": "List all tasks.", "input_schema": {"type": "object", "properties": {}}},
-    {"name": "spawn_teammate", "description": "Spawn teammate.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}}, "required": ["name", "role", "prompt"]}},
+    {"name": "spawn_teammate", "description": "Spawn teammate. Scopes control what tools the teammate can use (default: read,write,execute).", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}, "scopes": {"type": "array", "items": {"type": "string", "enum": ["read", "write", "execute", "admin", "agent"]}, "description": "Permission scopes (default: read,write,execute)"}}, "required": ["name", "role", "prompt"]}},
     {"name": "list_teammates", "description": "List teammates.", "input_schema": {"type": "object", "properties": {}}},
     {"name": "send_message", "description": "Send message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "content": {"type": "string"}, "msg_type": {"type": "string", "enum": list(VALID_MSG_TYPES)}}, "required": ["to", "content"]}},
     {"name": "read_inbox", "description": "Read lead inbox.", "input_schema": {"type": "object", "properties": {}}},
@@ -135,7 +140,7 @@ def agent_loop(messages: list):
         # Compression pipeline
         microcompact(messages)
         if estimate_tokens(messages) > TOKEN_THRESHOLD:
-            print("[auto-compact triggered]")
+            log.info("auto-compact triggered")
             messages[:] = auto_compact(messages, client, MODEL)
         # Drain background notifications + check lead inbox
         injections = []
@@ -152,10 +157,13 @@ def agent_loop(messages: list):
                     messages[-1]["content"].append({"text": inj})
             else:
                 messages.append(user_msg("\n".join(injections)))
-        # LLM call
-        msg, stop_reason = converse(client, MODEL, SYSTEM, messages, tools=TOOLS, max_tokens=8000)
+        # LLM call (streaming — prints text tokens to stdout)
+        emit("llm:before-request", {"messages": messages, "system": SYSTEM})
+        msg, stop_reason, usage = converse_stream(client, MODEL, SYSTEM, messages, tools=TOOLS, max_tokens=8000)
+        emit("llm:after-response", {"message": msg, "stop_reason": stop_reason, "usage": usage})
         messages.append(msg)
         if stop_reason != "tool_use":
+            emit("message:sent", {"message": msg})
             return
         # Tool execution
         results = []
@@ -165,10 +173,13 @@ def agent_loop(messages: list):
             if tu["name"] == "compress":
                 manual_compress = True
             handler = TOOL_HANDLERS.get(tu["name"])
+            emit("tool:before-execute", {"name": tu["name"], "input": tu["input"]})
             try:
                 output = handler(**tu["input"]) if handler else f"Unknown tool: {tu['name']}"
             except Exception as e:
+                log.error("tool %s failed: %s", tu["name"], e)
                 output = f"Error: {e}"
+            emit("tool:after-execute", {"name": tu["name"], "input": tu["input"], "output": str(output)[:500]})
             if tu["name"] == "bash":
                 print(f"  > bash: {tu['input'].get('command', '')[:120]}")
             else:
@@ -183,5 +194,5 @@ def agent_loop(messages: list):
         messages.append({"role": "user", "content": results})
         # Manual compress
         if manual_compress:
-            print("[manual compact]")
+            log.info("manual compact")
             messages[:] = auto_compact(messages, client, MODEL)

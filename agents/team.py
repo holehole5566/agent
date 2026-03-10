@@ -5,9 +5,14 @@ import threading
 import time
 import uuid
 
+import logging
+
 from config import WORKDIR, TEAM_DIR, INBOX_DIR, TASKS_DIR, POLL_INTERVAL, IDLE_TIMEOUT
 from _bedrock import converse, to_bedrock_tools, user_msg, asst_msg, get_tool_uses
 from tools import run_bash, run_read, run_write, run_edit
+from permissions import DEFAULT_TEAMMATE_SCOPES, check_permission, get_required_scope, filter_tools
+
+log = logging.getLogger("team")
 
 
 class TeammateManager:
@@ -29,19 +34,22 @@ class TeammateManager:
                 return m
         return None
 
-    def spawn(self, name: str, role: str, prompt: str) -> str:
+    def spawn(self, name: str, role: str, prompt: str, scopes: set = None) -> str:
+        granted = scopes if scopes else DEFAULT_TEAMMATE_SCOPES
         member = self._find(name)
         if member:
             if member["status"] not in ("idle", "shutdown"):
                 return f"Error: '{name}' is currently {member['status']}"
             member["status"] = "working"
             member["role"] = role
+            member["scopes"] = sorted(granted)
         else:
-            member = {"name": name, "role": role, "status": "working"}
+            member = {"name": name, "role": role, "status": "working", "scopes": sorted(granted)}
             self.config["members"].append(member)
         self._save()
-        threading.Thread(target=self._loop, args=(name, role, prompt), daemon=True).start()
-        return f"Spawned '{name}' (role: {role})"
+        log.info("spawned '%s' (role: %s, scopes: %s)", name, role, granted)
+        threading.Thread(target=self._loop, args=(name, role, prompt, granted), daemon=True).start()
+        return f"Spawned '{name}' (role: {role}, scopes: {','.join(sorted(granted))})"
 
     def _set_status(self, name: str, status: str):
         member = self._find(name)
@@ -49,12 +57,14 @@ class TeammateManager:
             member["status"] = status
             self._save()
 
-    def _loop(self, name: str, role: str, prompt: str):
+    def _loop(self, name: str, role: str, prompt: str, scopes: set = None):
+        granted = scopes if scopes else DEFAULT_TEAMMATE_SCOPES
         team_name = self.config["team_name"]
         sys_prompt = (f"You are '{name}', role: {role}, team: {team_name}, at {WORKDIR}. "
+                      f"Scopes: {','.join(sorted(granted))}. "
                       f"Use idle when done with current work. You may auto-claim tasks.")
         messages = [user_msg(prompt)]
-        tools_def = [
+        all_tools_def = [
             {"name": "bash", "description": "Run command.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
             {"name": "read_file", "description": "Read file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
             {"name": "write_file", "description": "Write file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
@@ -63,7 +73,7 @@ class TeammateManager:
             {"name": "idle", "description": "Signal no more work.", "input_schema": {"type": "object", "properties": {}}},
             {"name": "claim_task", "description": "Claim task by ID.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
         ]
-        tools = to_bedrock_tools(tools_def)
+        tools = to_bedrock_tools(filter_tools(all_tools_def, granted))
         while True:
             # -- WORK PHASE --
             for _ in range(50):
@@ -74,7 +84,7 @@ class TeammateManager:
                         return
                     messages.append(user_msg(json.dumps(m)))
                 try:
-                    msg, stop_reason = converse(self.client, self.model, sys_prompt, messages, tools=tools, max_tokens=8000)
+                    msg, stop_reason, _ = converse(self.client, self.model, sys_prompt, messages, tools=tools, max_tokens=8000)
                 except Exception:
                     self._set_status(name, "shutdown")
                     return
@@ -84,7 +94,11 @@ class TeammateManager:
                 results = []
                 idle_requested = False
                 for tu in get_tool_uses(msg["content"]):
-                    if tu["name"] == "idle":
+                    if not check_permission(tu["name"], granted):
+                        scope = get_required_scope(tu["name"])
+                        output = f"Permission denied: '{tu['name']}' requires '{scope}' scope"
+                        log.warning("%s denied tool '%s' (needs '%s')", name, tu["name"], scope)
+                    elif tu["name"] == "idle":
                         idle_requested = True
                         output = "Entering idle phase."
                     elif tu["name"] == "claim_task":
@@ -142,7 +156,8 @@ class TeammateManager:
             return "No teammates."
         lines = [f"Team: {self.config['team_name']}"]
         for m in self.config["members"]:
-            lines.append(f"  {m['name']} ({m['role']}): {m['status']}")
+            scopes = ",".join(m.get("scopes", ["read", "write", "execute"]))
+            lines.append(f"  {m['name']} ({m['role']}): {m['status']} [{scopes}]")
         return "\n".join(lines)
 
     def remove(self, name: str) -> str:

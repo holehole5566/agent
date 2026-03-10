@@ -11,25 +11,27 @@ Bedrock Converse vs Anthropic SDK key differences:
   - response['output']['message'] is the assistant message dict
 """
 
-import os
+import json
+import logging
 
 import boto3
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
+from config import CFG
+
+log = logging.getLogger("bedrock")
 
 
 def get_client():
     """Create a Bedrock Runtime client."""
     return boto3.client(
         "bedrock-runtime",
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        region_name=CFG.model.region,
     )
 
 
 def get_model():
-    """Get the model ID from environment."""
-    return os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+    """Get the model ID from config."""
+    return CFG.model.model_id
 
 
 # -- Message helpers --
@@ -64,16 +66,7 @@ def to_bedrock_tools(tools: list) -> list:
     ]
 
 
-# -- Converse wrapper --
-
-def converse(client, model: str, system: str, messages: list,
-             tools: list = None, max_tokens: int = 4096) -> tuple:
-    """Call Bedrock Converse API.
-
-    Returns: (assistant_message_dict, stop_reason)
-        assistant_message_dict = {"role": "assistant", "content": [...]}
-        stop_reason = "end_turn" | "tool_use" | "max_tokens" | ...
-    """
+def _build_kwargs(model, system, messages, tools, max_tokens):
     kwargs = {
         "modelId": model,
         "messages": messages,
@@ -83,17 +76,116 @@ def converse(client, model: str, system: str, messages: list,
         kwargs["system"] = [{"text": system}]
     if tools:
         kwargs["toolConfig"] = {"tools": tools}
-    response = client.converse(**kwargs)
-    msg = response["output"]["message"]
-    # Bedrock can return empty text blocks alongside toolUse blocks;
-    # strip them so they don't cause ValidationException on the next call
-    msg["content"] = [
-        block for block in msg["content"]
+    return kwargs
+
+
+def _clean_content(content: list) -> list:
+    """Strip empty text blocks that Bedrock sometimes returns alongside toolUse."""
+    cleaned = [
+        block for block in content
         if not ("text" in block and not block["text"])
     ]
-    if not msg["content"]:
-        msg["content"] = [{"text": "(empty)"}]
-    return msg, response["stopReason"]
+    return cleaned if cleaned else [{"text": "(empty)"}]
+
+
+# -- Converse wrapper (batch) --
+
+def converse(client, model: str, system: str, messages: list,
+             tools: list = None, max_tokens: int = 4096) -> tuple:
+    """Call Bedrock Converse API (batch, no streaming).
+
+    Returns: (assistant_message_dict, stop_reason)
+    """
+    kwargs = _build_kwargs(model, system, messages, tools, max_tokens)
+    response = client.converse(**kwargs)
+    msg = response["output"]["message"]
+    msg["content"] = _clean_content(msg["content"])
+    usage = response.get("usage", {})
+    return msg, response["stopReason"], usage
+
+
+# -- Converse wrapper (streaming) --
+
+def converse_stream(client, model: str, system: str, messages: list,
+                    tools: list = None, max_tokens: int = 4096) -> tuple:
+    """Call Bedrock Converse API with streaming.
+
+    Prints text tokens to stdout as they arrive.
+    Returns: (assistant_message_dict, stop_reason) — same shape as converse().
+    """
+    kwargs = _build_kwargs(model, system, messages, tools, max_tokens)
+    response = client.converse_stream(**kwargs)
+
+    content_blocks = []
+    current_text = None
+    current_tool = None
+    stop_reason = "end_turn"
+    has_streamed_text = False
+    usage = {}
+    import sys
+    safe_print = lambda s: sys.stdout.buffer.write(s.encode("utf-8", errors="replace")) and sys.stdout.buffer.flush()
+
+    for event in response["stream"]:
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            start_data = start.get("start", {})
+            if "toolUse" in start_data:
+                current_tool = {
+                    "toolUseId": start_data["toolUse"]["toolUseId"],
+                    "name": start_data["toolUse"]["name"],
+                    "input_json": "",
+                }
+                current_text = None
+            else:
+                current_text = ""
+                current_tool = None
+
+        elif "contentBlockDelta" in event:
+            delta = event["contentBlockDelta"].get("delta", {})
+            if "text" in delta:
+                if current_text is None:
+                    current_text = ""
+                chunk = delta["text"]
+                current_text += chunk
+                safe_print(chunk)
+                has_streamed_text = True
+            elif "toolUse" in delta:
+                if current_tool is not None:
+                    current_tool["input_json"] += delta["toolUse"].get("input", "")
+
+        elif "contentBlockStop" in event:
+            if current_text is not None:
+                if current_text:
+                    content_blocks.append({"text": current_text})
+                current_text = None
+            elif current_tool is not None:
+                try:
+                    parsed = json.loads(current_tool["input_json"]) if current_tool["input_json"] else {}
+                except json.JSONDecodeError:
+                    log.warning("failed to parse tool input JSON for %s", current_tool["name"])
+                    parsed = {}
+                content_blocks.append({
+                    "toolUse": {
+                        "toolUseId": current_tool["toolUseId"],
+                        "name": current_tool["name"],
+                        "input": parsed,
+                    }
+                })
+                current_tool = None
+
+        elif "messageStop" in event:
+            stop_reason = event["messageStop"].get("stopReason", "end_turn")
+
+        elif "metadata" in event:
+            usage = event["metadata"].get("usage", {})
+
+    if has_streamed_text:
+        safe_print("\n")  # newline after streamed text
+
+    content_blocks = _clean_content(content_blocks) if content_blocks else [{"text": "(empty)"}]
+
+    msg = {"role": "assistant", "content": content_blocks}
+    return msg, stop_reason, usage
 
 
 # -- Response parsing helpers --

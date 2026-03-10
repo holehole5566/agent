@@ -19,6 +19,8 @@ wheels/
 .team/
 .transcripts/
 .worktrees/
+.sessions/
+logs/
 
 # IDE
 .vscode/
