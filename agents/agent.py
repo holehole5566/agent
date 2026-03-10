@@ -1,0 +1,187 @@
+"""Agent orchestrator — tool dispatch, tool definitions, and main loop."""
+
+import json
+
+from config import WORKDIR, VALID_MSG_TYPES, TOKEN_THRESHOLD
+from _bedrock import (
+    get_client, get_model, converse, to_bedrock_tools,
+    user_msg, asst_msg, get_tool_uses, get_text,
+)
+from tools import run_bash, run_read, run_write, run_edit
+from todos import TodoManager
+from tasks import TaskManager
+from background import BackgroundManager
+from messaging import MessageBus
+from skills import SkillLoader
+from compression import estimate_tokens, microcompact, auto_compact
+from team import TeammateManager, handle_shutdown_request, handle_plan_review
+
+from config import SKILLS_DIR
+
+# --- Global instances ---
+client = get_client()
+MODEL = get_model()
+
+TODO = TodoManager()
+SKILLS = SkillLoader(SKILLS_DIR)
+TASK_MGR = TaskManager()
+BG = BackgroundManager()
+BUS = MessageBus()
+TEAM = TeammateManager(BUS, TASK_MGR, client, MODEL)
+
+SYSTEM = f"""You are a coding agent at {WORKDIR}. Use tools to solve tasks.
+Prefer task_create/task_update/task_list for multi-step work. Use TodoWrite for short checklists.
+Use task for subagent delegation. Use load_skill for specialized knowledge.
+Skills: {SKILLS.descriptions()}"""
+
+
+# --- Subagent ---
+def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
+    sub_tools_def = [
+        {"name": "bash", "description": "Run command.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+        {"name": "read_file", "description": "Read file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    ]
+    if agent_type != "Explore":
+        sub_tools_def += [
+            {"name": "write_file", "description": "Write file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+            {"name": "edit_file", "description": "Edit file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+        ]
+    sub_tools = to_bedrock_tools(sub_tools_def)
+    sub_handlers = {
+        "bash": lambda **kw: run_bash(kw["command"]),
+        "read_file": lambda **kw: run_read(kw["path"]),
+        "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
+        "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    }
+    sub_msgs = [user_msg(prompt)]
+    msg = None
+    for _ in range(30):
+        msg, stop_reason = converse(client, MODEL, "", sub_msgs, tools=sub_tools, max_tokens=8000)
+        sub_msgs.append(msg)
+        if stop_reason != "tool_use":
+            break
+        results = []
+        for tu in get_tool_uses(msg["content"]):
+            h = sub_handlers.get(tu["name"], lambda **kw: "Unknown tool")
+            results.append({"toolResult": {"toolUseId": tu["toolUseId"], "content": [{"text": str(h(**tu["input"]))[:50000]}]}})
+        sub_msgs.append({"role": "user", "content": results})
+    if msg:
+        return get_text(msg["content"]) or "(no summary)"
+    return "(subagent failed)"
+
+
+# --- Tool handlers ---
+TOOL_HANDLERS = {
+    "bash":             lambda **kw: run_bash(kw["command"]),
+    "read_file":        lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "write_file":       lambda **kw: run_write(kw["path"], kw["content"]),
+    "edit_file":        lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "TodoWrite":        lambda **kw: TODO.update(kw["items"]),
+    "task":             lambda **kw: run_subagent(kw["prompt"], kw.get("agent_type", "Explore")),
+    "load_skill":       lambda **kw: SKILLS.load(kw["name"]),
+    "compress":         lambda **kw: "Compressing...",
+    "background_run":   lambda **kw: BG.run(kw["command"], kw.get("timeout", 120)),
+    "check_background": lambda **kw: BG.check(kw.get("task_id")),
+    "task_create":      lambda **kw: TASK_MGR.create(kw["subject"], kw.get("description", "")),
+    "task_get":         lambda **kw: TASK_MGR.get(kw["task_id"]),
+    "task_update":      lambda **kw: TASK_MGR.update(kw["task_id"], kw.get("status"), kw.get("add_blocked_by"), kw.get("add_blocks")),
+    "task_list":        lambda **kw: TASK_MGR.list_all(),
+    "spawn_teammate":   lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
+    "list_teammates":   lambda **kw: TEAM.list_all(),
+    "send_message":     lambda **kw: BUS.send("lead", kw["to"], kw["content"], kw.get("msg_type", "message")),
+    "read_inbox":       lambda **kw: json.dumps(BUS.read_inbox("lead"), indent=2),
+    "broadcast":        lambda **kw: BUS.broadcast("lead", kw["content"], TEAM.member_names()),
+    "remove_teammate":  lambda **kw: TEAM.remove(kw["name"]),
+    "shutdown_request": lambda **kw: handle_shutdown_request(BUS, kw["teammate"]),
+    "plan_approval":    lambda **kw: handle_plan_review(BUS, kw["request_id"], kw["approve"], kw.get("feedback", "")),
+    "idle":             lambda **kw: "Lead does not idle.",
+    "claim_task":       lambda **kw: TASK_MGR.claim(kw["task_id"], "lead"),
+}
+
+# --- Tool definitions ---
+TOOLS_DEF = [
+    {"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+    {"name": "read_file", "description": "Read file contents.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write content to file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "edit_file", "description": "Replace exact text in file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+    {"name": "TodoWrite", "description": "Update task tracking list.", "input_schema": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}, "activeForm": {"type": "string"}}, "required": ["content", "status", "activeForm"]}}}, "required": ["items"]}},
+    {"name": "task", "description": "Spawn a subagent.", "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}, "agent_type": {"type": "string", "enum": ["Explore", "general-purpose"]}}, "required": ["prompt"]}},
+    {"name": "load_skill", "description": "Load specialized knowledge.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "compress", "description": "Compress conversation.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "background_run", "description": "Run in background.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["command"]}},
+    {"name": "check_background", "description": "Check background task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
+    {"name": "task_create", "description": "Create persistent task.", "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}}, "required": ["subject"]}},
+    {"name": "task_get", "description": "Get task by ID.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+    {"name": "task_update", "description": "Update task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "deleted"]}, "add_blocked_by": {"type": "array", "items": {"type": "integer"}}, "add_blocks": {"type": "array", "items": {"type": "integer"}}}, "required": ["task_id"]}},
+    {"name": "task_list", "description": "List all tasks.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "spawn_teammate", "description": "Spawn teammate.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}}, "required": ["name", "role", "prompt"]}},
+    {"name": "list_teammates", "description": "List teammates.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "send_message", "description": "Send message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "content": {"type": "string"}, "msg_type": {"type": "string", "enum": list(VALID_MSG_TYPES)}}, "required": ["to", "content"]}},
+    {"name": "read_inbox", "description": "Read lead inbox.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "broadcast", "description": "Broadcast to all.", "input_schema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}},
+    {"name": "remove_teammate", "description": "Force-remove a teammate (use when shutdown_request fails or teammate is stuck).", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "shutdown_request", "description": "Request graceful shutdown.", "input_schema": {"type": "object", "properties": {"teammate": {"type": "string"}}, "required": ["teammate"]}},
+    {"name": "plan_approval", "description": "Approve/reject plan.", "input_schema": {"type": "object", "properties": {"request_id": {"type": "string"}, "approve": {"type": "boolean"}, "feedback": {"type": "string"}}, "required": ["request_id", "approve"]}},
+    {"name": "idle", "description": "Enter idle.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "claim_task", "description": "Claim task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+]
+TOOLS = to_bedrock_tools(TOOLS_DEF)
+
+
+# --- Agent loop ---
+def agent_loop(messages: list):
+    rounds_without_todo = 0
+    while True:
+        # Compression pipeline
+        microcompact(messages)
+        if estimate_tokens(messages) > TOKEN_THRESHOLD:
+            print("[auto-compact triggered]")
+            messages[:] = auto_compact(messages, client, MODEL)
+        # Drain background notifications + check lead inbox
+        injections = []
+        notifs = BG.drain()
+        if notifs:
+            txt = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
+            injections.append(f"<background-results>\n{txt}\n</background-results>")
+        inbox = BUS.read_inbox("lead")
+        if inbox:
+            injections.append(f"<inbox>{json.dumps(inbox, indent=2)}</inbox>")
+        if injections:
+            if messages and messages[-1]["role"] == "user":
+                for inj in injections:
+                    messages[-1]["content"].append({"text": inj})
+            else:
+                messages.append(user_msg("\n".join(injections)))
+        # LLM call
+        msg, stop_reason = converse(client, MODEL, SYSTEM, messages, tools=TOOLS, max_tokens=8000)
+        messages.append(msg)
+        if stop_reason != "tool_use":
+            return
+        # Tool execution
+        results = []
+        used_todo = False
+        manual_compress = False
+        for tu in get_tool_uses(msg["content"]):
+            if tu["name"] == "compress":
+                manual_compress = True
+            handler = TOOL_HANDLERS.get(tu["name"])
+            try:
+                output = handler(**tu["input"]) if handler else f"Unknown tool: {tu['name']}"
+            except Exception as e:
+                output = f"Error: {e}"
+            if tu["name"] == "bash":
+                print(f"  > bash: {tu['input'].get('command', '')[:120]}")
+            else:
+                print(f"  > {tu['name']}")
+            results.append({"toolResult": {"toolUseId": tu["toolUseId"], "content": [{"text": str(output)}]}})
+            if tu["name"] == "TodoWrite":
+                used_todo = True
+        # Nag reminder
+        rounds_without_todo = 0 if used_todo else rounds_without_todo + 1
+        if TODO.has_open_items() and rounds_without_todo >= 3:
+            results.insert(0, {"text": "<reminder>Update your todos.</reminder>"})
+        messages.append({"role": "user", "content": results})
+        # Manual compress
+        if manual_compress:
+            print("[manual compact]")
+            messages[:] = auto_compact(messages, client, MODEL)

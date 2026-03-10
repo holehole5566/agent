@@ -5,7 +5,9 @@ import os
 # Allow running from project root: python main.py
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "agents"))
 
-from s_full import agent_loop, user_msg, TASK_MGR, TEAM, BUS, auto_compact, get_text
+from agent import agent_loop, TASK_MGR, TEAM, BUS, client, MODEL
+from _bedrock import user_msg, get_text
+from compression import auto_compact
 import json
 
 
@@ -27,7 +29,7 @@ def main():
         if query.strip() == "/compact":
             if history:
                 print("[manual compact]")
-                history[:] = auto_compact(history)
+                history[:] = auto_compact(history, client, MODEL)
             continue
         if query.strip() == "/tasks":
             print(TASK_MGR.list_all()); continue
