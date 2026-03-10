@@ -1,0 +1,10 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "A nano Claude Code-like agent using AWS Bedrock Converse API"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.34.0",
+    "python-dotenv>=1.0.0",
+]
