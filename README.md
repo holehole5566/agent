@@ -4,7 +4,7 @@ An open-source AI agent framework with multi-channel support, persistent memory,
 
 ## Features
 
-- **Multi-channel** — CLI and Telegram out of the box, extensible to any platform
+- **Multi-channel** — Telegram out of the box, extensible to any platform
 - **Persistent sessions** — PostgreSQL-backed conversations that survive restarts
 - **Workspace memory** — document-based memory with hybrid search (FTS + vector via pgvector)
 - **Cron routines** — scheduled automated tasks with LLM execution and notifications
@@ -15,7 +15,7 @@ An open-source AI agent framework with multi-channel support, persistent memory,
 - **Scope-based permissions** — read/write/execute/admin/agent scopes per teammate
 - **Skill loader** — YAML frontmatter + markdown skills with security scanning
 - **Hook system** — lifecycle events, auto-loaded from `hooks/` directory
-- **Context compression** — microcompact, auto-compact at token threshold, manual `/compact`
+- **Context compression** — microcompact, auto-compact at token threshold
 - **CLI subcommands** — manage sessions, tasks, and routines without running the agent
 
 ## Quick Start
@@ -28,7 +28,7 @@ uv sync
 
 # Configure
 cp config.toml.example config.toml
-# Edit config.toml — set your model, region, database, and optionally telegram token
+# Edit config.toml — set your model, region, database, and telegram token
 
 # Run the agent
 uv run python main.py
@@ -69,7 +69,7 @@ password = ""
 dbname = "agent"
 
 [gateway]
-channels = ["cli"]  # or ["telegram"] for headless, or ["cli", "telegram"] for both
+channels = ["telegram"]
 
 [telegram]
 token = ""         # from @BotFather
@@ -89,9 +89,8 @@ AWS credentials are loaded from the standard chain (`~/.aws/credentials`, env va
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
 2. Set `telegram.token` in `config.toml`
-3. Set `gateway.channels = ["telegram"]`
-4. Set `telegram.owner_id` to your Telegram user ID to restrict access
-5. Run `uv run python main.py`
+3. Set `telegram.owner_id` to your Telegram user ID to restrict access
+4. Run `uv run python main.py`
 
 Responses are sent with Markdown formatting (auto-fallback to plain text on parse errors).
 
@@ -110,7 +109,6 @@ agents/
   _bedrock.py            # Bedrock API: converse, converse_stream, helpers
   channels/
     base.py              # Channel abstract base class
-    cli.py               # Interactive terminal channel
     telegram.py          # Telegram bot (owner_id, Markdown responses)
   sessions.py            # PostgreSQL session persistence
   tasks.py               # PostgreSQL task board
@@ -129,23 +127,8 @@ agents/
   dm_policy.py           # DM access control
   todos.py               # In-memory todo tracking
   log.py                 # Logging setup
-tests/                   # 152 tests (pytest)
+tests/                   # pytest
 ```
-
-## Interactive Commands
-
-When running with the CLI channel:
-
-| Command | Description |
-|---------|-------------|
-| `/clear` | Clear terminal |
-| `/compact` | Manually compress conversation |
-| `/tasks` | List task board |
-| `/team` | List teammates |
-| `/team clear` | Remove all teammates |
-| `/inbox` | Read lead inbox |
-| `/hooks` | List registered hooks |
-| `q` / `exit` | Quit |
 
 ## Hooks
 

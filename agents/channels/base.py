@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 class Channel(ABC):
     """Base class for all messaging channels.
 
-    A channel connects a user-facing platform (CLI, Telegram, etc.)
+    A channel connects a user-facing platform (Telegram, Slack, etc.)
     to the gateway. It receives messages from users and sends responses back.
     """
 
@@ -16,7 +16,7 @@ class Channel(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Channel identifier (e.g. 'cli', 'telegram')."""
+        """Channel identifier (e.g. 'telegram')."""
         ...
 
     @abstractmethod

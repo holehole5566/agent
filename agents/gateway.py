@@ -99,7 +99,7 @@ class Gateway:
         self.session_mgr.save(session.session_id, session.history)
 
     def start(self):
-        """Start all channels. If CLI is present, it runs in foreground. Otherwise block."""
+        """Start all channels and block until interrupted."""
         emit("agent:bootstrap", {})
 
         # Start routine engine
@@ -108,23 +108,18 @@ class Gateway:
 
         # Start all channels in background threads
         for name, channel in self.channels.items():
-            if name != "cli":
-                t = threading.Thread(target=channel.start, daemon=True, name=f"channel-{name}")
-                t.start()
-                log.info("started channel '%s' in background", name)
+            t = threading.Thread(target=channel.start, daemon=True, name=f"channel-{name}")
+            t.start()
+            log.info("started channel '%s' in background", name)
 
-        # CLI runs in foreground (blocks on input loop)
-        if "cli" in self.channels:
-            self.channels["cli"].start()
-        else:
-            # Headless mode — block until interrupted
-            log.info("running headless (no CLI). Press Ctrl+C to stop.")
-            try:
-                while True:
-                    import time
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
+        # Block until interrupted
+        log.info("agent running. Press Ctrl+C to stop.")
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
     def stop(self):
         for name, channel in self.channels.items():

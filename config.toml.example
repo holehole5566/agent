@@ -38,7 +38,7 @@ enabled = true
 check_interval = 15
 
 [gateway]
-channels = ["cli"]  # options: "cli", "telegram" — use ["telegram"] for headless mode
+channels = ["telegram"]
 
 [telegram]
 token = ""       # Get from @BotFather on Telegram

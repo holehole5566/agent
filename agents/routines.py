@@ -328,13 +328,9 @@ class RoutineEngine:
         """Send routine result to the user via the first available channel."""
         if not self.gateway or not text:
             return
-        # Find a channel to send to (prefer telegram)
-        for ch_name in ["telegram", "cli"]:
-            channel = self.gateway.channels.get(ch_name)
-            if channel:
-                # Use owner_id if available, otherwise skip
-                owner_id = getattr(channel, "owner_id", None)
-                if owner_id:
-                    prefix = f"🔄 **Routine: {routine['name']}**\n\n"
-                    channel.send_response(owner_id, prefix + text)
+        for channel in self.gateway.channels.values():
+            owner_id = getattr(channel, "owner_id", None)
+            if owner_id:
+                prefix = f"🔄 **Routine: {routine['name']}**\n\n"
+                channel.send_response(owner_id, prefix + text)
                 return

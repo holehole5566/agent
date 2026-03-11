@@ -40,7 +40,7 @@ class LoggingConfig:
 
 @dataclass
 class GatewayConfig:
-    channels: list = field(default_factory=lambda: ["cli"])
+    channels: list = field(default_factory=lambda: ["telegram"])
 
 
 @dataclass

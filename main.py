@@ -19,14 +19,11 @@ def cmd_serve(args):
     load_hooks(Path.cwd() / "hooks")
 
     from gateway import Gateway
-    from channels.cli import CLIChannel
 
     gw = Gateway()
 
     for ch_name in CFG.gateway.channels:
-        if ch_name == "cli":
-            gw.register_channel("cli", CLIChannel(gw))
-        elif ch_name == "telegram":
+        if ch_name == "telegram":
             if not CFG.telegram.token:
                 print("Error: telegram.token not set in config.toml")
                 continue
