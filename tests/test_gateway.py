@@ -1,6 +1,7 @@
 """Tests for gateway and channel routing."""
 
 import json
+import pytest
 from unittest.mock import MagicMock, patch
 
 from channels.base import Channel
@@ -8,6 +9,18 @@ from gateway import Gateway, Session
 from dm_policy import DMPolicy
 from _bedrock import user_msg
 from conftest import make_stream_events
+
+
+@pytest.fixture(autouse=True)
+def _mock_session_db(monkeypatch):
+    """Prevent SessionManager from connecting to real PostgreSQL."""
+    import sessions
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None  # no existing session
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr(sessions.psycopg2, "connect", MagicMock(return_value=mock_conn))
 
 
 class FakeChannel(Channel):
@@ -41,7 +54,7 @@ class FakeChannel(Channel):
 
 def test_gateway_registers_channel(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
@@ -53,7 +66,7 @@ def test_gateway_registers_channel(tmp_path, monkeypatch):
 
 def test_gateway_creates_session(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
@@ -69,7 +82,7 @@ def test_gateway_creates_session(tmp_path, monkeypatch):
 
 def test_gateway_different_channels_different_sessions(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
@@ -81,7 +94,7 @@ def test_gateway_different_channels_different_sessions(tmp_path, monkeypatch):
 
 def test_gateway_routes_message(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
@@ -106,7 +119,7 @@ def test_gateway_routes_message(tmp_path, monkeypatch):
 
 def test_gateway_dm_policy_blocks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
@@ -125,7 +138,7 @@ def test_gateway_dm_policy_blocks(tmp_path, monkeypatch):
 
 def test_gateway_dm_policy_pairing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for d in [".tasks", ".team", ".team/inbox", ".sessions", "skills", ".transcripts"]:
+    for d in [".tasks", ".team", ".team/inbox", "skills", ".transcripts"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 

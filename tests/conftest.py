@@ -16,7 +16,7 @@ def tmp_workdir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     # Create subdirs that the agent expects
-    for d in [".tasks", ".team", ".team/inbox", ".transcripts", ".sessions", "skills"]:
+    for d in [".tasks", ".team", ".team/inbox", ".transcripts", "skills"]:
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
 
     # Write a minimal config.toml

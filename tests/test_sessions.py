@@ -1,78 +1,117 @@
-"""Tests for session persistence."""
+"""Tests for session persistence (PostgreSQL-backed)."""
 
 import json
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch, call
 
 from sessions import SessionManager
 
 
-def test_new_session(tmp_path, monkeypatch):
-    """New session creates a unique ID."""
-    monkeypatch.chdir(tmp_path)
-    import config
-    monkeypatch.setattr(config, "SESSIONS_DIR", tmp_path / ".sessions")
+def _make_manager():
+    """Create a SessionManager with mocked DB connection."""
+    with patch("sessions.psycopg2") as mock_pg:
+        mock_conn = MagicMock()
+        mock_pg.connect.return_value = mock_conn
+        mock_conn.autocommit = True
+        # Mock cursor context manager
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        sm = SessionManager()
+    return sm, mock_conn, mock_cursor
 
-    import sessions
-    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path / ".sessions")
 
-    sm = SessionManager()
-    sid = sm.new_session()
-    assert sid.startswith("s_")
-    assert sm.current_id == sid
+def test_make_id():
+    assert SessionManager._make_id("telegram", "123") == "telegram:123"
+    assert SessionManager._make_id("cli", "user1") == "cli:user1"
 
 
-def test_save_and_load(tmp_path, monkeypatch):
-    """Save messages and load them back."""
-    monkeypatch.chdir(tmp_path)
-    sessions_dir = tmp_path / ".sessions"
+def test_extract_preview():
+    messages = [
+        {"role": "user", "content": [{"text": "Tell me about Python"}]},
+        {"role": "assistant", "content": [{"text": "Python is..."}]},
+    ]
+    assert "Python" in SessionManager._extract_preview(messages)
 
-    import sessions
-    monkeypatch.setattr(sessions, "SESSIONS_DIR", sessions_dir)
 
-    sm = SessionManager()
-    sm.new_session()
+def test_extract_preview_empty():
+    assert SessionManager._extract_preview([]) == ""
+    assert SessionManager._extract_preview([{"role": "assistant", "content": []}]) == ""
+
+
+def test_get_or_create_new():
+    """New session returns empty history and inserts row."""
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None  # no existing session
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    sid, history = sm.get_or_create("telegram", "123")
+    assert sid == "telegram:123"
+    assert history == []
+    # Should have called INSERT
+    insert_call = [c for c in mock_cursor.execute.call_args_list if "INSERT" in str(c)]
+    assert len(insert_call) == 1
+
+
+def test_get_or_create_existing():
+    """Existing session returns stored history."""
+    sm, mock_conn, _ = _make_manager()
+    stored_messages = [{"role": "user", "content": [{"text": "hello"}]}]
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = {"messages": stored_messages}
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    sid, history = sm.get_or_create("telegram", "123")
+    assert sid == "telegram:123"
+    assert history == stored_messages
+
+
+def test_save():
+    """Save updates the session row."""
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
     messages = [
         {"role": "user", "content": [{"text": "hello"}]},
-        {"role": "assistant", "content": [{"text": "hi there"}]},
+        {"role": "assistant", "content": [{"text": "hi"}]},
     ]
-    sm.save(messages)
+    sm.save("telegram:123", messages)
 
-    # Verify file exists
-    saved_file = sessions_dir / f"{sm.current_id}.json"
-    assert saved_file.exists()
-
-    # Load and verify
-    loaded = sm.load(sm.current_id)
-    assert len(loaded) == 2
-    assert loaded[0]["role"] == "user"
-    assert loaded[1]["content"][0]["text"] == "hi there"
+    update_call = [c for c in mock_cursor.execute.call_args_list if "UPDATE" in str(c)]
+    assert len(update_call) == 1
 
 
-def test_save_extracts_preview(tmp_path, monkeypatch):
-    """Save stores a preview from the first user message."""
-    sessions_dir = tmp_path / ".sessions"
-    import sessions
-    monkeypatch.setattr(sessions, "SESSIONS_DIR", sessions_dir)
+def test_save_empty_noop():
+    """Save with empty messages does nothing."""
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    sm = SessionManager()
-    sm.new_session()
-    messages = [
-        {"role": "user", "content": [{"text": "Tell me about Python decorators"}]},
-        {"role": "assistant", "content": [{"text": "Decorators are..."}]},
-    ]
-    sm.save(messages)
-
-    data = json.loads((sessions_dir / f"{sm.current_id}.json").read_text())
-    assert "Python decorators" in data["preview"]
+    sm.save("telegram:123", [])
+    assert mock_cursor.execute.call_count == 0
 
 
-def test_load_nonexistent_raises(tmp_path, monkeypatch):
+def test_load_existing():
+    """Load returns messages for existing session."""
+    sm, mock_conn, _ = _make_manager()
+    stored = [{"role": "user", "content": [{"text": "test"}]}]
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = {"messages": stored}
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    result = sm.load("telegram:123")
+    assert result == stored
+
+
+def test_load_nonexistent_raises():
     """Loading a nonexistent session raises ValueError."""
-    sessions_dir = tmp_path / ".sessions"
-    import sessions
-    monkeypatch.setattr(sessions, "SESSIONS_DIR", sessions_dir)
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    sm = SessionManager()
     try:
         sm.load("nonexistent")
         assert False, "Should have raised ValueError"
@@ -80,40 +119,48 @@ def test_load_nonexistent_raises(tmp_path, monkeypatch):
         assert "not found" in str(e)
 
 
-def test_list_sessions(tmp_path, monkeypatch):
-    """List shows saved sessions."""
-    sessions_dir = tmp_path / ".sessions"
-    import sessions
-    monkeypatch.setattr(sessions, "SESSIONS_DIR", sessions_dir)
+def test_list_sessions_empty():
+    """List returns message when no sessions exist."""
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    sm = SessionManager()
-    assert "No saved sessions" in sm.list_sessions()
-
-    sm.new_session()
-    sm.save([{"role": "user", "content": [{"text": "test query"}]}])
-
-    listing = sm.list_sessions()
-    assert sm.current_id in listing
-    assert "test query" in listing
+    result = sm.list_sessions()
+    assert "No saved sessions" in result
 
 
-def test_multiple_sessions(tmp_path, monkeypatch):
-    """Multiple sessions can coexist."""
-    sessions_dir = tmp_path / ".sessions"
-    import sessions as sessions_mod
-    monkeypatch.setattr(sessions_mod, "SESSIONS_DIR", sessions_dir)
+def test_list_sessions():
+    """List formats session rows correctly."""
+    sm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        {
+            "id": "telegram:123",
+            "channel": "telegram",
+            "user_id": "123",
+            "preview": "hello world",
+            "updated_at": datetime(2026, 3, 11, 12, 0, tzinfo=timezone.utc),
+        },
+    ]
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    sm = SessionManager()
+    result = sm.list_sessions()
+    assert "telegram:123" in result
+    assert "hello world" in result
+    assert "2026-03-11" in result
 
-    # Use explicit IDs to avoid timestamp collision
-    sm.current_id = "s_test_one"
-    sm.save([{"role": "user", "content": [{"text": "session one"}]}])
 
-    sm.current_id = "s_test_two"
-    sm.save([{"role": "user", "content": [{"text": "session two"}]}])
+def test_disabled_graceful():
+    """When DB connection fails, all ops are graceful."""
+    with patch("sessions.psycopg2") as mock_pg:
+        mock_pg.connect.side_effect = Exception("connection refused")
+        sm = SessionManager()
 
-    loaded1 = sm.load("s_test_one")
-    assert loaded1[0]["content"][0]["text"] == "session one"
-
-    loaded2 = sm.load("s_test_two")
-    assert loaded2[0]["content"][0]["text"] == "session two"
+    assert sm._enabled is False
+    sid, history = sm.get_or_create("telegram", "123")
+    assert sid == "telegram:123"
+    assert history == []
+    # save should not raise
+    sm.save("telegram:123", [{"role": "user", "content": [{"text": "hi"}]}])
+    assert sm.list_sessions() == "Session store not available."

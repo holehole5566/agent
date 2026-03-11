@@ -22,7 +22,7 @@ class CLIChannel(Channel):
 
     def start(self):
         print("Agent (Bedrock + Gateway) - type 'q' to quit")
-        print("Commands: /clear /compact /tasks /team /team clear /inbox /sessions /resume <id> /hooks\n")
+        print("Commands: /clear /compact /tasks /team /team clear /inbox /hooks\n")
 
         while True:
             try:
@@ -80,22 +80,6 @@ class CLIChannel(Channel):
             return True
         if cmd == "/inbox":
             print(json.dumps(BUS.read_inbox("lead"), indent=2))
-            return True
-        if cmd == "/sessions":
-            print(self.gateway.session_mgr.list_sessions())
-            return True
-        if cmd.startswith("/resume"):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) < 2:
-                print("Usage: /resume <session_id>")
-                return True
-            try:
-                session = self.gateway._get_session("cli", "cli_user")
-                session.history = self.gateway.session_mgr.load(parts[1])
-                session.session_id = parts[1]
-                print(f"Resumed session: {parts[1]} ({len(session.history)} messages)")
-            except ValueError as e:
-                print(f"Error: {e}")
             return True
         if cmd == "/hooks":
             print(list_hooks())

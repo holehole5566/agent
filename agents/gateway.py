@@ -49,9 +49,12 @@ class Gateway:
         key = (channel_name, user_id)
         with self._lock:
             if key not in self.sessions:
-                sid = self.session_mgr.new_session()
-                self.sessions[key] = Session(sid, channel_name, user_id)
-                log.info("new session %s for %s/%s", sid, channel_name, user_id)
+                sid, history = self.session_mgr.get_or_create(channel_name, user_id)
+                session = Session(sid, channel_name, user_id)
+                session.history = history
+                self.sessions[key] = session
+                log.info("session %s for %s/%s (%d messages)",
+                         sid, channel_name, user_id, len(history))
             return self.sessions[key]
 
     def handle_message(self, channel, user_id: str, text: str):
@@ -87,8 +90,7 @@ class Gateway:
         channel.on_response_done(user_id, full_text)
 
         # Auto-save
-        self.session_mgr.current_id = session.session_id
-        self.session_mgr.save(session.history)
+        self.session_mgr.save(session.session_id, session.history)
 
     def start(self):
         """Start all channels. If CLI is present, it runs in foreground. Otherwise block."""
