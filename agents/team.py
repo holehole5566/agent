@@ -7,7 +7,7 @@ import uuid
 
 import logging
 
-from config import WORKDIR, TEAM_DIR, INBOX_DIR, TASKS_DIR, POLL_INTERVAL, IDLE_TIMEOUT
+from config import WORKDIR, TEAM_DIR, INBOX_DIR, POLL_INTERVAL, IDLE_TIMEOUT
 from _bedrock import converse, to_bedrock_tools, user_msg, asst_msg, get_tool_uses
 from tools import run_bash, run_read, run_write, run_edit
 from permissions import DEFAULT_TEAMMATE_SCOPES, check_permission, get_required_scope, filter_tools
@@ -131,11 +131,7 @@ class TeammateManager:
                         messages.append(user_msg(json.dumps(m)))
                     resume = True
                     break
-                unclaimed = []
-                for f in sorted(TASKS_DIR.glob("task_*.json")):
-                    t = json.loads(f.read_text(encoding="utf-8"))
-                    if t.get("status") == "pending" and not t.get("owner") and not t.get("blockedBy"):
-                        unclaimed.append(t)
+                unclaimed = self.task_mgr.list_unclaimed()
                 if unclaimed:
                     task = unclaimed[0]
                     self.task_mgr.claim(task["id"], name)

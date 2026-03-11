@@ -1,151 +1,168 @@
-"""Tests for task manager."""
+"""Tests for task manager (PostgreSQL-backed)."""
 
 import json
-from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from tasks import TaskManager
 
 
-def test_create_task(tmp_path, monkeypatch):
-    """Create a task and verify it's saved."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
-
-    tm = TaskManager()
-    result = tm.create("Build login page", "Add OAuth support")
-    data = json.loads(result)
-    assert data["subject"] == "Build login page"
-    assert data["status"] == "pending"
-    assert data["id"] == 1
-
-    # Verify file on disk
-    assert (tasks_dir / "task_1.json").exists()
+def _make_manager():
+    """Create a TaskManager with mocked DB connection."""
+    with patch("tasks.psycopg2") as mock_pg:
+        mock_conn = MagicMock()
+        mock_pg.connect.return_value = mock_conn
+        mock_conn.autocommit = True
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        tm = TaskManager()
+    return tm, mock_conn, mock_cursor
 
 
-def test_create_multiple_tasks(tmp_path, monkeypatch):
-    """IDs auto-increment."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
-
-    tm = TaskManager()
-    t1 = json.loads(tm.create("Task 1"))
-    t2 = json.loads(tm.create("Task 2"))
-    t3 = json.loads(tm.create("Task 3"))
-    assert t1["id"] == 1
-    assert t2["id"] == 2
-    assert t3["id"] == 3
+def _mock_row(tid=1, subject="Test task", description="", status="pending",
+              owner=None, blocked_by=None, blocks=None):
+    return {
+        "id": tid, "subject": subject, "description": description,
+        "status": status, "owner": owner,
+        "blocked_by": blocked_by or [], "blocks": blocks or [],
+    }
 
 
-def test_get_task(tmp_path, monkeypatch):
-    """Get a task by ID."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_create_task():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _mock_row(1, "Build login page", "Add OAuth")
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    tm.create("My task")
+    result = json.loads(tm.create("Build login page", "Add OAuth"))
+    assert result["subject"] == "Build login page"
+    assert result["status"] == "pending"
+    assert result["id"] == 1
+
+
+def test_get_task():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _mock_row(1, "My task")
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
     result = json.loads(tm.get(1))
     assert result["subject"] == "My task"
 
 
-def test_update_task_status(tmp_path, monkeypatch):
-    """Update task status."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_get_nonexistent():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    tm.create("My task")
+    try:
+        tm.get(999)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "not found" in str(e)
+
+
+def test_update_status():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _mock_row(1, "My task", status="in_progress")
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
     result = json.loads(tm.update(1, status="in_progress"))
     assert result["status"] == "in_progress"
 
 
-def test_claim_task(tmp_path, monkeypatch):
-    """Claim a task assigns owner and sets in_progress."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_delete_task():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    # First call returns the task (for _load), second call is the DELETE
+    mock_cursor.fetchone.return_value = _mock_row(1, "Deletable")
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    tm.create("Claimable task")
+    result = tm.update(1, status="deleted")
+    assert "deleted" in result.lower()
+    delete_calls = [c for c in mock_cursor.execute.call_args_list if "DELETE" in str(c)]
+    assert len(delete_calls) >= 1
+
+
+def test_claim_task():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _mock_row(1, "Claimable", owner=None)
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
     result = tm.claim(1, "alice")
     assert "Claimed" in result
-
-    task = json.loads(tm.get(1))
-    assert task["owner"] == "alice"
-    assert task["status"] == "in_progress"
+    update_calls = [c for c in mock_cursor.execute.call_args_list if "UPDATE" in str(c)]
+    assert len(update_calls) >= 1
 
 
-def test_claim_already_claimed(tmp_path, monkeypatch):
-    """Cannot claim an already claimed task."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_claim_already_claimed():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _mock_row(1, "Claimed", owner="alice")
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    tm.create("Contested task")
-    tm.claim(1, "alice")
     result = tm.claim(1, "bob")
     assert "Error" in result
     assert "alice" in result
 
 
-def test_claim_nonexistent(tmp_path, monkeypatch):
-    """Claiming nonexistent task returns error."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_claim_nonexistent():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
     result = tm.claim(999, "alice")
     assert "Error" in result
 
 
-def test_list_all(tmp_path, monkeypatch):
-    """List shows all tasks."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_list_all_empty():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    assert "No tasks" in tm.list_all()
-
-    tm.create("Task A")
-    tm.create("Task B")
-    listing = tm.list_all()
-    assert "Task A" in listing
-    assert "Task B" in listing
+    result = tm.list_all()
+    assert "No tasks" in result
 
 
-def test_delete_task(tmp_path, monkeypatch):
-    """Deleting a task removes the file."""
-    tasks_dir = tmp_path / ".tasks"
-    import config
-    monkeypatch.setattr(config, "TASKS_DIR", tasks_dir)
-    import tasks
-    monkeypatch.setattr(tasks, "TASKS_DIR", tasks_dir)
+def test_list_all():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        _mock_row(1, "Task A"),
+        _mock_row(2, "Task B", status="in_progress", owner="alice"),
+    ]
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    tm = TaskManager()
-    tm.create("Deletable")
-    assert (tasks_dir / "task_1.json").exists()
+    result = tm.list_all()
+    assert "Task A" in result
+    assert "Task B" in result
+    assert "@alice" in result
 
-    tm.update(1, status="deleted")
-    assert not (tasks_dir / "task_1.json").exists()
+
+def test_list_unclaimed():
+    tm, mock_conn, _ = _make_manager()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        _mock_row(1, "Unclaimed task"),
+    ]
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    result = tm.list_unclaimed()
+    assert len(result) == 1
+    assert result[0]["subject"] == "Unclaimed task"
+
+
+def test_disabled_graceful():
+    with patch("tasks.psycopg2") as mock_pg:
+        mock_pg.connect.side_effect = Exception("connection refused")
+        tm = TaskManager()
+
+    assert tm._enabled is False
+    assert "not available" in tm.create("test").lower() or "error" in tm.create("test").lower()
+    assert tm.list_all() == "Task store not available."
+    assert tm.list_unclaimed() == []

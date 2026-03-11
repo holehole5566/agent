@@ -76,6 +76,12 @@ class MemoryConfig:
 
 
 @dataclass
+class RoutinesConfig:
+    enabled: bool = True
+    check_interval: int = 15
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -87,6 +93,7 @@ class Config:
     dm_policy: DMPolicyConfig = field(default_factory=DMPolicyConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    routines: RoutinesConfig = field(default_factory=RoutinesConfig)
 
 
 def load_config() -> Config:
@@ -105,6 +112,7 @@ def load_config() -> Config:
             dm_policy=DMPolicyConfig(**data.get("dm_policy", {})),
             database=DatabaseConfig(**data.get("database", {})),
             memory=MemoryConfig(**data.get("memory", {})),
+            routines=RoutinesConfig(**data.get("routines", {})),
         )
     # Fallback: env vars (backward compat with .env)
     from dotenv import load_dotenv

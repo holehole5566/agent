@@ -10,6 +10,31 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def _make_mock_conn():
+    """Create a mock psycopg2 connection that passes schema creation."""
+    mock_conn = MagicMock()
+    mock_conn.autocommit = True
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.fetchall.return_value = []
+    mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    return mock_conn
+
+
+@pytest.fixture(autouse=True)
+def _mock_all_db(monkeypatch):
+    """Prevent all DB-backed modules from connecting to real PostgreSQL."""
+    mock_conn = _make_mock_conn()
+    mock_connect = MagicMock(return_value=mock_conn)
+    for mod_name in ["sessions", "tasks", "routines"]:
+        try:
+            mod = __import__(mod_name)
+            monkeypatch.setattr(mod.psycopg2, "connect", mock_connect)
+        except (ImportError, AttributeError):
+            pass
+
+
 @pytest.fixture
 def tmp_workdir(tmp_path, monkeypatch):
     """Set up a temporary working directory with all agent subdirs."""

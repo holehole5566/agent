@@ -19,6 +19,7 @@ from team import TeammateManager, handle_shutdown_request, handle_plan_review
 from permissions import ALL_SCOPES, DEFAULT_TEAMMATE_SCOPES, check_permission, get_required_scope
 from hooks import emit
 from workspace import Workspace, MEMORY_PATH
+from routines import RoutineManager
 
 from config import SKILLS_DIR
 
@@ -35,12 +36,14 @@ BG = BackgroundManager()
 BUS = MessageBus()
 TEAM = TeammateManager(BUS, TASK_MGR, client, MODEL)
 WORKSPACE = Workspace()
+ROUTINE_MGR = RoutineManager()
 
 _memory_content = WORKSPACE.read_memory() if WORKSPACE.enabled else ""
 _memory_block = f"\n\n## Long-Term Memory\n\n{_memory_content}" if _memory_content else ""
 SYSTEM = f"""You are a coding agent at {WORKDIR}. Use tools to solve tasks.
 Prefer task_create/task_update/task_list for multi-step work. Use TodoWrite for short checklists.
 Use task for subagent delegation. Use load_skill for specialized knowledge.
+Use routine_create for scheduled/recurring tasks (cron). Use routine_list to check existing routines.
 Use memory_search before answering questions about prior work or context.
 Use memory_write to persist important facts, decisions, and session notes.
 Skills: {SKILLS.descriptions()}{_memory_block}"""
@@ -122,6 +125,11 @@ TOOL_HANDLERS = {
     "plan_approval":    lambda **kw: handle_plan_review(BUS, kw["request_id"], kw["approve"], kw.get("feedback", "")),
     "idle":             lambda **kw: "Lead does not idle.",
     "claim_task":       lambda **kw: TASK_MGR.claim(kw["task_id"], "lead"),
+    "routine_create":   lambda **kw: ROUTINE_MGR.create(kw["name"], kw["schedule"], kw["prompt"], kw.get("description", ""), kw.get("cooldown_secs", 300)),
+    "routine_list":     lambda **kw: ROUTINE_MGR.list_all(),
+    "routine_delete":   lambda **kw: ROUTINE_MGR.delete(kw["name"]),
+    "routine_history":  lambda **kw: ROUTINE_MGR.history(kw["name"], kw.get("limit", 10)),
+    "routine_toggle":   lambda **kw: ROUTINE_MGR.toggle(kw["name"], kw["enabled"]),
     "memory_search":    lambda **kw: json.dumps(WORKSPACE.search(kw["query"], kw.get("limit", 5)), indent=2, default=str),
     "memory_write":     lambda **kw: json.dumps(_memory_write(**kw), default=str),
     "memory_read":      lambda **kw: json.dumps(WORKSPACE.read(kw["path"]) or {"error": "not found"}, default=str),
@@ -154,6 +162,11 @@ TOOLS_DEF = [
     {"name": "plan_approval", "description": "Approve/reject plan.", "input_schema": {"type": "object", "properties": {"request_id": {"type": "string"}, "approve": {"type": "boolean"}, "feedback": {"type": "string"}}, "required": ["request_id", "approve"]}},
     {"name": "idle", "description": "Enter idle.", "input_schema": {"type": "object", "properties": {}}},
     {"name": "claim_task", "description": "Claim task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+    {"name": "routine_create", "description": "Create or update a scheduled routine. Uses 5-field cron syntax (min hour day month weekday).", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "schedule": {"type": "string", "description": "Cron expression, e.g. '0 9 * * *' for daily 9am UTC"}, "prompt": {"type": "string", "description": "The task prompt to execute"}, "description": {"type": "string"}, "cooldown_secs": {"type": "integer", "description": "Min seconds between runs (default 300)"}}, "required": ["name", "schedule", "prompt"]}},
+    {"name": "routine_list", "description": "List all routines with status.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "routine_delete", "description": "Delete a routine by name.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "routine_history", "description": "Show recent runs of a routine.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["name"]}},
+    {"name": "routine_toggle", "description": "Enable or disable a routine.", "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "enabled": {"type": "boolean"}}, "required": ["name", "enabled"]}},
     {"name": "memory_search", "description": "Search workspace memories (hybrid FTS + semantic). Call before answering questions about prior work.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "Natural language search query"}, "limit": {"type": "integer", "description": "Max results (default 5)"}}, "required": ["query"]}},
     {"name": "memory_write", "description": "Write to persistent memory. target: 'memory' for MEMORY.md (curated facts), 'daily_log' for today's timestamped log, or a custom path like 'projects/notes.md'.", "input_schema": {"type": "object", "properties": {"content": {"type": "string"}, "target": {"type": "string", "description": "'memory', 'daily_log', or custom path", "default": "daily_log"}, "append": {"type": "boolean", "description": "Append (true) or overwrite (false)", "default": True}}, "required": ["content"]}},
     {"name": "memory_read", "description": "Read a workspace file by path.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},

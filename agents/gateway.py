@@ -9,6 +9,8 @@ from sessions import SessionManager
 from dm_policy import DMPolicy
 from hooks import emit
 from config import CFG
+from routines import RoutineEngine
+from agent import ROUTINE_MGR
 
 log = logging.getLogger("gateway")
 
@@ -40,6 +42,10 @@ class Gateway:
             print(f"  DM pairing code: {self.dm_policy.pairing_code}")
             log.info("DM pairing code: %s", self.dm_policy.pairing_code)
         self._lock = threading.Lock()
+        self.routine_engine = RoutineEngine(
+            ROUTINE_MGR, gateway=self,
+            check_interval=CFG.routines.check_interval,
+        ) if CFG.routines.enabled else None
 
     def register_channel(self, name: str, channel):
         self.channels[name] = channel
@@ -95,6 +101,10 @@ class Gateway:
     def start(self):
         """Start all channels. If CLI is present, it runs in foreground. Otherwise block."""
         emit("agent:bootstrap", {})
+
+        # Start routine engine
+        if self.routine_engine:
+            self.routine_engine.start()
 
         # Start all channels in background threads
         for name, channel in self.channels.items():
