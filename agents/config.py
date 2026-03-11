@@ -72,7 +72,6 @@ class MemoryConfig:
     embedding_model: str = "amazon.titan-embed-text-v2:0"
     embedding_dimensions: int = 1024
     max_results: int = 5
-    auto_save: bool = True
 
 
 @dataclass
