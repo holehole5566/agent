@@ -22,6 +22,7 @@ config.toml
 .transcripts/
 .worktrees/
 .sessions/
+.dm_allowlist.json
 logs/
 
 # IDE

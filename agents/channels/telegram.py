@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -19,6 +20,7 @@ class TelegramChannel(Channel):
         self.token = token
         self._running = False
         self._offset = 0
+        self._typing = {}  # user_id → threading.Event (signals when to stop typing)
 
     @property
     def name(self) -> str:
@@ -73,6 +75,7 @@ class TelegramChannel(Channel):
                         user_id = str(user.get("id", chat_id))
                         username = user.get("username", user.get("first_name", user_id))
                         log.info("telegram msg from %s: %s", username, text[:80])
+                        self._start_typing(user_id)
                         self.on_message(user_id, text)
             except Exception as e:
                 log.error("Telegram polling error: %s", e)
@@ -83,6 +86,7 @@ class TelegramChannel(Channel):
 
     def send_response(self, user_id: str, text: str):
         """Send a message back to the Telegram user."""
+        self._stop_typing(user_id)
         if not text:
             return
         # Telegram max message length is 4096
@@ -95,10 +99,29 @@ class TelegramChannel(Channel):
             if not result.get("ok"):
                 log.error("Failed to send to %s: %s", user_id, result.get("description"))
 
+    def _start_typing(self, user_id: str):
+        """Start sending typing indicator in a background thread."""
+        stop_event = threading.Event()
+        self._typing[user_id] = stop_event
+
+        def loop():
+            while not stop_event.is_set():
+                self._api("sendChatAction", {"chat_id": user_id, "action": "typing"})
+                stop_event.wait(4)  # Telegram typing expires after ~5s
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _stop_typing(self, user_id: str):
+        """Stop the typing indicator."""
+        stop_event = self._typing.pop(user_id, None)
+        if stop_event:
+            stop_event.set()
+
     def on_text_chunk(self, user_id: str, chunk: str):
-        """Telegram doesn't stream — chunks are ignored, full text sent on done."""
+        """Telegram doesn't stream — chunks are ignored."""
         pass
 
     def on_response_done(self, user_id: str, full_text: str):
-        """Send the complete response as a Telegram message."""
+        """Stop typing and send the complete response."""
+        self._stop_typing(user_id)
         self.send_response(user_id, full_text)

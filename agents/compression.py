@@ -35,4 +35,4 @@ def auto_compact(messages: list, client, model: str) -> list:
     conv_text = json.dumps(messages, default=str)[:80000]
     summary_msg, _, _ = converse(client, model, "", [user_msg(f"Summarize for continuity:\n{conv_text}")], max_tokens=2000)
     summary = get_text(summary_msg["content"])
-    return [user_msg(f"[Compressed. Transcript: {path}]\n{summary}"), asst_msg("Understood. Continuing with summary context.")]
+    return [user_msg(f"[Compressed. Transcript: {path}]\n{summary}\n\nContinue from this context.")]

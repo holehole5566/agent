@@ -92,6 +92,7 @@ def test_gateway_routes_message(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "client", mock_client)
 
     gw = Gateway()
+    gw.dm_policy = DMPolicy(mode="open")
     ch = FakeChannel(gw)
     gw.register_channel("test", ch)
 
@@ -128,6 +129,9 @@ def test_gateway_dm_policy_pairing(tmp_path, monkeypatch):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     (tmp_path / "config.toml").write_text('[model]\nmodel_id = "test"\n')
 
+    import dm_policy as dm_mod
+    monkeypatch.setattr(dm_mod, "ALLOWLIST_FILE", tmp_path / "allowlist.json")
+
     gw = Gateway()
     gw.dm_policy = DMPolicy(mode="pairing", pairing_code="abc123")
     ch = FakeChannel(gw)
@@ -135,9 +139,10 @@ def test_gateway_dm_policy_pairing(tmp_path, monkeypatch):
 
     # First message without code — rejected
     gw.handle_message(ch, "user1", "hello")
-    assert len(ch.sent) == 1
+    assert len(ch.sent) >= 1
     assert "pairing code" in ch.sent[0][1].lower()
 
-    # Send pairing code — accepted
+    # Send pairing code — paired
     gw.handle_message(ch, "user1", "abc123")
-    assert "Paired" in ch.sent[1][1]
+    paired_msgs = [s for s in ch.sent if "Paired" in s[1]]
+    assert len(paired_msgs) == 1

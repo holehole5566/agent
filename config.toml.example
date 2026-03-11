@@ -23,7 +23,7 @@ level = "INFO"
 file = "logs/agent.log"
 
 [gateway]
-channels = ["cli"]  # add "telegram" to enable both
+channels = ["cli"]  # options: "cli", "telegram" — use ["telegram"] for headless mode
 
 [telegram]
 token = ""  # Get from @BotFather on Telegram

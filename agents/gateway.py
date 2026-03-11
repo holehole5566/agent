@@ -36,6 +36,9 @@ class Gateway:
             allowlist=CFG.dm_policy.allowlist,
             pairing_code=CFG.dm_policy.pairing_code,
         )
+        if self.dm_policy.mode == "pairing":
+            print(f"  DM pairing code: {self.dm_policy.pairing_code}")
+            log.info("DM pairing code: %s", self.dm_policy.pairing_code)
         self._lock = threading.Lock()
 
     def register_channel(self, name: str, channel):
@@ -88,19 +91,28 @@ class Gateway:
         self.session_mgr.save(session.history)
 
     def start(self):
-        """Start all channels. The last one registered as 'cli' runs in foreground."""
+        """Start all channels. If CLI is present, it runs in foreground. Otherwise block."""
         emit("agent:bootstrap", {})
 
-        # Start non-CLI channels in background threads
+        # Start all channels in background threads
         for name, channel in self.channels.items():
             if name != "cli":
                 t = threading.Thread(target=channel.start, daemon=True, name=f"channel-{name}")
                 t.start()
                 log.info("started channel '%s' in background", name)
 
-        # Start CLI in foreground (blocks)
+        # CLI runs in foreground (blocks on input loop)
         if "cli" in self.channels:
             self.channels["cli"].start()
+        else:
+            # Headless mode — block until interrupted
+            log.info("running headless (no CLI). Press Ctrl+C to stop.")
+            try:
+                while True:
+                    import time
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
 
     def stop(self):
         for name, channel in self.channels.items():
