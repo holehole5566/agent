@@ -134,7 +134,8 @@ TOOLS = to_bedrock_tools(TOOLS_DEF)
 
 
 # --- Agent loop ---
-def agent_loop(messages: list):
+def agent_loop(messages: list, on_text=None):
+    """Run the agent loop. on_text: optional callback for streaming text chunks."""
     rounds_without_todo = 0
     while True:
         # Compression pipeline
@@ -159,7 +160,7 @@ def agent_loop(messages: list):
                 messages.append(user_msg("\n".join(injections)))
         # LLM call (streaming — prints text tokens to stdout)
         emit("llm:before-request", {"messages": messages, "system": SYSTEM})
-        msg, stop_reason, usage = converse_stream(client, MODEL, SYSTEM, messages, tools=TOOLS, max_tokens=8000)
+        msg, stop_reason, usage = converse_stream(client, MODEL, SYSTEM, messages, tools=TOOLS, max_tokens=8000, on_text=on_text)
         emit("llm:after-response", {"message": msg, "stop_reason": stop_reason, "usage": usage})
         messages.append(msg)
         if stop_reason != "tool_use":

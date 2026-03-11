@@ -41,12 +41,32 @@ class LoggingConfig:
 
 
 @dataclass
+class GatewayConfig:
+    channels: list = field(default_factory=lambda: ["cli"])
+
+
+@dataclass
+class TelegramConfig:
+    token: str = ""
+
+
+@dataclass
+class DMPolicyConfig:
+    mode: str = "open"
+    allowlist: list = field(default_factory=list)
+    pairing_code: str = ""
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     team: TeamConfig = field(default_factory=TeamConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    gateway: GatewayConfig = field(default_factory=GatewayConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    dm_policy: DMPolicyConfig = field(default_factory=DMPolicyConfig)
 
 
 def load_config() -> Config:
@@ -60,6 +80,9 @@ def load_config() -> Config:
             team=TeamConfig(**data.get("team", {})),
             paths=PathsConfig(**data.get("paths", {})),
             logging=LoggingConfig(**data.get("logging", {})),
+            gateway=GatewayConfig(**data.get("gateway", {})),
+            telegram=TelegramConfig(**data.get("telegram", {})),
+            dm_policy=DMPolicyConfig(**data.get("dm_policy", {})),
         )
     # Fallback: env vars (backward compat with .env)
     from dotenv import load_dotenv

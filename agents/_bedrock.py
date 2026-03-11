@@ -106,24 +106,32 @@ def converse(client, model: str, system: str, messages: list,
 
 # -- Converse wrapper (streaming) --
 
+def _default_print(chunk: str):
+    """Default streaming output — write UTF-8 to stdout (safe on Windows cp950)."""
+    import sys
+    sys.stdout.buffer.write(chunk.encode("utf-8", errors="replace"))
+    sys.stdout.buffer.flush()
+
+
 def converse_stream(client, model: str, system: str, messages: list,
-                    tools: list = None, max_tokens: int = 4096) -> tuple:
+                    tools: list = None, max_tokens: int = 4096,
+                    on_text=None) -> tuple:
     """Call Bedrock Converse API with streaming.
 
-    Prints text tokens to stdout as they arrive.
-    Returns: (assistant_message_dict, stop_reason) — same shape as converse().
+    on_text: callback(chunk: str) for each text token. Defaults to stdout print.
+             Pass None to use default, or a custom function for non-CLI channels.
+    Returns: (assistant_message_dict, stop_reason, usage)
     """
     kwargs = _build_kwargs(model, system, messages, tools, max_tokens)
     response = client.converse_stream(**kwargs)
 
+    output_fn = on_text if on_text is not None else _default_print
     content_blocks = []
     current_text = None
     current_tool = None
     stop_reason = "end_turn"
     has_streamed_text = False
     usage = {}
-    import sys
-    safe_print = lambda s: sys.stdout.buffer.write(s.encode("utf-8", errors="replace")) and sys.stdout.buffer.flush()
 
     for event in response["stream"]:
         if "contentBlockStart" in event:
@@ -147,7 +155,7 @@ def converse_stream(client, model: str, system: str, messages: list,
                     current_text = ""
                 chunk = delta["text"]
                 current_text += chunk
-                safe_print(chunk)
+                output_fn(chunk)
                 has_streamed_text = True
             elif "toolUse" in delta:
                 if current_tool is not None:
@@ -180,7 +188,7 @@ def converse_stream(client, model: str, system: str, messages: list,
             usage = event["metadata"].get("usage", {})
 
     if has_streamed_text:
-        safe_print("\n")  # newline after streamed text
+        output_fn("\n")  # newline after streamed text
 
     content_blocks = _clean_content(content_blocks) if content_blocks else [{"text": "(empty)"}]
 

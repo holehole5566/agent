@@ -13,6 +13,8 @@ wheels/
 .env
 .env.*
 !.env.example
+config.toml
+!config.toml.example
 
 # Agent runtime artifacts
 .tasks/
