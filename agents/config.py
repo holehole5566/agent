@@ -58,6 +58,24 @@ class DMPolicyConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    host: str = "localhost"
+    port: int = 5432
+    user: str = ""
+    password: str = ""
+    dbname: str = "agent"
+
+
+@dataclass
+class MemoryConfig:
+    enabled: bool = False
+    embedding_model: str = "amazon.titan-embed-text-v2:0"
+    embedding_dimensions: int = 1024
+    max_results: int = 5
+    auto_save: bool = True
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -67,6 +85,8 @@ class Config:
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     dm_policy: DMPolicyConfig = field(default_factory=DMPolicyConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def load_config() -> Config:
@@ -83,6 +103,8 @@ def load_config() -> Config:
             gateway=GatewayConfig(**data.get("gateway", {})),
             telegram=TelegramConfig(**data.get("telegram", {})),
             dm_policy=DMPolicyConfig(**data.get("dm_policy", {})),
+            database=DatabaseConfig(**data.get("database", {})),
+            memory=MemoryConfig(**data.get("memory", {})),
         )
     # Fallback: env vars (backward compat with .env)
     from dotenv import load_dotenv

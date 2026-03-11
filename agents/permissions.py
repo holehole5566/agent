@@ -9,10 +9,12 @@ SCOPES = {
     "read": {
         "read_file", "task_list", "task_get", "list_teammates",
         "read_inbox", "check_background", "load_skill",
+        "memory_recall", "memory_stats",
     },
     "write": {
         "write_file", "edit_file", "TodoWrite",
         "task_create", "task_update", "claim_task",
+        "memory_save", "memory_forget",
     },
     "execute": {
         "bash", "background_run",

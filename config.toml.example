@@ -22,6 +22,20 @@ sessions_dir = ".sessions"
 level = "INFO"
 file = "logs/agent.log"
 
+[database]
+host = "localhost"
+port = 5432
+user = ""
+password = ""
+dbname = "agent"
+
+[memory]
+enabled = false                              # set true to enable vector memory
+embedding_model = "amazon.titan-embed-text-v2:0"
+embedding_dimensions = 1024
+max_results = 5
+auto_save = true                             # auto-save exchanges to memory
+
 [gateway]
 channels = ["cli"]  # options: "cli", "telegram" — use ["telegram"] for headless mode
 

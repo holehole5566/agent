@@ -3,7 +3,7 @@
 import json
 import logging
 
-from config import WORKDIR, VALID_MSG_TYPES, TOKEN_THRESHOLD
+from config import CFG, WORKDIR, VALID_MSG_TYPES, TOKEN_THRESHOLD
 from _bedrock import (
     get_client, get_model, converse, converse_stream, to_bedrock_tools,
     user_msg, asst_msg, get_tool_uses, get_text,
@@ -18,6 +18,7 @@ from compression import estimate_tokens, microcompact, auto_compact
 from team import TeammateManager, handle_shutdown_request, handle_plan_review
 from permissions import ALL_SCOPES, DEFAULT_TEAMMATE_SCOPES, check_permission, get_required_scope
 from hooks import emit
+from memory import MemoryManager
 
 from config import SKILLS_DIR
 
@@ -33,6 +34,7 @@ TASK_MGR = TaskManager()
 BG = BackgroundManager()
 BUS = MessageBus()
 TEAM = TeammateManager(BUS, TASK_MGR, client, MODEL)
+MEMORY = MemoryManager()
 
 SYSTEM = f"""You are a coding agent at {WORKDIR}. Use tools to solve tasks.
 Prefer task_create/task_update/task_list for multi-step work. Use TodoWrite for short checklists.
@@ -101,6 +103,10 @@ TOOL_HANDLERS = {
     "plan_approval":    lambda **kw: handle_plan_review(BUS, kw["request_id"], kw["approve"], kw.get("feedback", "")),
     "idle":             lambda **kw: "Lead does not idle.",
     "claim_task":       lambda **kw: TASK_MGR.claim(kw["task_id"], "lead"),
+    "memory_recall":    lambda **kw: json.dumps(MEMORY.recall(kw["query"], kw.get("limit")), indent=2),
+    "memory_save":      lambda **kw: MEMORY.remember(kw["content"]),
+    "memory_forget":    lambda **kw: MEMORY.forget(kw["memory_id"]),
+    "memory_stats":     lambda **kw: MEMORY.stats(),
 }
 
 # --- Tool definitions ---
@@ -129,6 +135,10 @@ TOOLS_DEF = [
     {"name": "plan_approval", "description": "Approve/reject plan.", "input_schema": {"type": "object", "properties": {"request_id": {"type": "string"}, "approve": {"type": "boolean"}, "feedback": {"type": "string"}}, "required": ["request_id", "approve"]}},
     {"name": "idle", "description": "Enter idle.", "input_schema": {"type": "object", "properties": {}}},
     {"name": "claim_task", "description": "Claim task.", "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+    {"name": "memory_recall", "description": "Search memories semantically.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}},
+    {"name": "memory_save", "description": "Save a fact or note to long-term memory.", "input_schema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}},
+    {"name": "memory_forget", "description": "Delete a memory by ID.", "input_schema": {"type": "object", "properties": {"memory_id": {"type": "integer"}}, "required": ["memory_id"]}},
+    {"name": "memory_stats", "description": "Get memory statistics.", "input_schema": {"type": "object", "properties": {}}},
 ]
 TOOLS = to_bedrock_tools(TOOLS_DEF)
 
@@ -143,8 +153,19 @@ def agent_loop(messages: list, on_text=None):
         if estimate_tokens(messages) > TOKEN_THRESHOLD:
             log.info("auto-compact triggered")
             messages[:] = auto_compact(messages, client, MODEL)
-        # Drain background notifications + check lead inbox
+        # Inject relevant memories
         injections = []
+        if MEMORY.enabled and messages:
+            last_user = ""
+            for m in reversed(messages):
+                if m["role"] == "user":
+                    last_user = get_text(m.get("content", []))
+                    break
+            if last_user:
+                mem_ctx = MEMORY.build_context(last_user)
+                if mem_ctx:
+                    injections.append(mem_ctx)
+        # Drain background notifications + check lead inbox
         notifs = BG.drain()
         if notifs:
             txt = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
@@ -165,6 +186,12 @@ def agent_loop(messages: list, on_text=None):
         messages.append(msg)
         if stop_reason != "tool_use":
             emit("message:sent", {"message": msg})
+            # Auto-save exchange to memory
+            if MEMORY.enabled and CFG.memory.auto_save and len(messages) >= 2:
+                user_text = get_text(messages[-2].get("content", [])) if messages[-2]["role"] == "user" else ""
+                agent_text = get_text(msg.get("content", []))
+                if user_text and agent_text:
+                    MEMORY.save_exchange(user_text, agent_text)
             return
         # Tool execution
         results = []
