@@ -13,10 +13,8 @@ idle_timeout = 60
 
 [paths]
 skills_dir = "skills"
-tasks_dir = ".tasks"
 team_dir = ".team"
 transcripts_dir = ".transcripts"
-sessions_dir = ".sessions"
 
 [logging]
 level = "INFO"
@@ -30,17 +28,21 @@ password = ""
 dbname = "agent"
 
 [memory]
-enabled = false                              # set true to enable vector memory
+enabled = false
 embedding_model = "amazon.titan-embed-text-v2:0"
 embedding_dimensions = 1024
 max_results = 5
-auto_save = true                             # auto-save exchanges to memory
+
+[routines]
+enabled = true
+check_interval = 15
 
 [gateway]
 channels = ["cli"]  # options: "cli", "telegram" — use ["telegram"] for headless mode
 
 [telegram]
-token = ""  # Get from @BotFather on Telegram
+token = ""       # Get from @BotFather on Telegram
+owner_id = ""    # Set to your Telegram user ID to restrict access
 
 [dm_policy]
 mode = "open"        # "open", "allowlist", "pairing"

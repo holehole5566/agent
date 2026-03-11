@@ -1,7 +1,7 @@
 [project]
 name = "agent"
 version = "0.1.0"
-description = "A nano Claude Code-like agent using AWS Bedrock Converse API"
+description = "An open-source AI agent framework with multi-channel support, persistent memory, and cron routines — powered by AWS Bedrock"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

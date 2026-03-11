@@ -47,8 +47,7 @@ def tmp_workdir(tmp_path, monkeypatch):
     # Write a minimal config.toml
     (tmp_path / "config.toml").write_text(
         '[model]\nmodel_id = "test-model"\nregion = "us-east-1"\n'
-        '[paths]\ntasks_dir = ".tasks"\nteam_dir = ".team"\n'
-        'sessions_dir = ".sessions"\nskills_dir = "skills"\n'
+        '[paths]\nteam_dir = ".team"\nskills_dir = "skills"\n'
         'transcripts_dir = ".transcripts"\n'
     )
 

@@ -28,10 +28,8 @@ class TeamConfig:
 @dataclass
 class PathsConfig:
     skills_dir: str = "skills"
-    tasks_dir: str = ".tasks"
     team_dir: str = ".team"
     transcripts_dir: str = ".transcripts"
-    sessions_dir: str = ".sessions"
 
 
 @dataclass
@@ -131,10 +129,8 @@ CFG = load_config()
 WORKDIR = Path.cwd()
 TEAM_DIR = WORKDIR / CFG.paths.team_dir
 INBOX_DIR = TEAM_DIR / "inbox"
-TASKS_DIR = WORKDIR / CFG.paths.tasks_dir
 SKILLS_DIR = WORKDIR / CFG.paths.skills_dir
 TRANSCRIPT_DIR = WORKDIR / CFG.paths.transcripts_dir
-SESSIONS_DIR = WORKDIR / CFG.paths.sessions_dir
 
 TOKEN_THRESHOLD = CFG.agent.token_threshold
 POLL_INTERVAL = CFG.team.poll_interval

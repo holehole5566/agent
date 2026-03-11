@@ -43,15 +43,15 @@ def test_partial_toml_uses_defaults(tmp_path, monkeypatch):
     assert cfg.model.model_id == "partial-model"
     assert cfg.model.region == "us-east-1"  # default
     assert cfg.agent.token_threshold == 100000  # default
-    assert cfg.paths.sessions_dir == ".sessions"  # default
+    assert cfg.paths.team_dir == ".team"  # default
 
 
 def test_paths_config(tmp_path, monkeypatch):
     """Custom paths from config.toml are respected."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.toml").write_text(
-        '[paths]\ntasks_dir = "my-tasks"\nsessions_dir = "my-sessions"\n'
+        '[paths]\nteam_dir = "my-team"\nskills_dir = "my-skills"\n'
     )
     cfg = load_config()
-    assert cfg.paths.tasks_dir == "my-tasks"
-    assert cfg.paths.sessions_dir == "my-sessions"
+    assert cfg.paths.team_dir == "my-team"
+    assert cfg.paths.skills_dir == "my-skills"
