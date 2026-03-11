@@ -48,6 +48,7 @@ class GatewayConfig:
 @dataclass
 class TelegramConfig:
     token: str = ""
+    owner_id: str = ""
 
 
 @dataclass

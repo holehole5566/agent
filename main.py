@@ -29,7 +29,7 @@ def main():
                 print("Error: telegram.token not set in config.toml")
                 continue
             from channels.telegram import TelegramChannel
-            gw.register_channel("telegram", TelegramChannel(gw, CFG.telegram.token))
+            gw.register_channel("telegram", TelegramChannel(gw, CFG.telegram.token, owner_id=CFG.telegram.owner_id))
         else:
             print(f"Warning: unknown channel '{ch_name}'")
 

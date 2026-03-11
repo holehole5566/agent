@@ -15,9 +15,10 @@ log = logging.getLogger("channel.telegram")
 class TelegramChannel(Channel):
     """Telegram bot channel using long polling."""
 
-    def __init__(self, gateway, token: str):
+    def __init__(self, gateway, token: str, owner_id: str = ""):
         super().__init__(gateway)
         self.token = token
+        self.owner_id = owner_id
         self._running = False
         self._offset = 0
         self._typing = {}  # user_id → threading.Event (signals when to stop typing)
@@ -74,6 +75,9 @@ class TelegramChannel(Channel):
                         user = msg.get("from", {})
                         user_id = str(user.get("id", chat_id))
                         username = user.get("username", user.get("first_name", user_id))
+                        if self.owner_id and user_id != self.owner_id:
+                            log.debug("ignoring msg from non-owner %s (%s)", username, user_id)
+                            continue
                         log.info("telegram msg from %s: %s", username, text[:80])
                         self._start_typing(user_id)
                         self.on_message(user_id, text)
@@ -84,6 +88,24 @@ class TelegramChannel(Channel):
     def stop(self):
         self._running = False
 
+    def _send_chunk(self, user_id: str, text: str):
+        """Send a single message chunk with Markdown, falling back to plain text."""
+        result = self._api("sendMessage", {
+            "chat_id": user_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        })
+        if not result.get("ok"):
+            desc = result.get("description", "")
+            if "can't parse entities" in desc or "parse" in desc.lower():
+                log.warning("Markdown parse failed, retrying plain text")
+                result = self._api("sendMessage", {
+                    "chat_id": user_id,
+                    "text": text,
+                })
+            if not result.get("ok"):
+                log.error("Failed to send to %s: %s", user_id, result.get("description"))
+
     def send_response(self, user_id: str, text: str):
         """Send a message back to the Telegram user."""
         self._stop_typing(user_id)
@@ -91,13 +113,7 @@ class TelegramChannel(Channel):
             return
         # Telegram max message length is 4096
         for i in range(0, len(text), 4000):
-            chunk = text[i:i + 4000]
-            result = self._api("sendMessage", {
-                "chat_id": user_id,
-                "text": chunk,
-            })
-            if not result.get("ok"):
-                log.error("Failed to send to %s: %s", user_id, result.get("description"))
+            self._send_chunk(user_id, text[i:i + 4000])
 
     def _start_typing(self, user_id: str):
         """Start sending typing indicator in a background thread."""
